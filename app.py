@@ -3,7 +3,7 @@ import pickle
 import pandas as pd
 
 # Load trained model
-model = pickle.load(open("models/branch_predictor.pkl", "rb"))
+model = pickle.load(open("models/branch-predicton.pkl", "rb"))
 
 st.title("Engineering Branch Predictor")
 st.write("Enter your academic details to predict your most suitable branch.")
