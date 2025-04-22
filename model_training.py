@@ -6,7 +6,7 @@ from sklearn.metrics import classification_report, accuracy_score
 from sklearn.model_selection import train_test_split
 
 # Load dataset
-file_path = "C:/Users/kaneb/OneDrive/Desktop/FINAL YEAR MEGA PROJECT/branch_predictor_dataset_modified.csv"
+file_path = "branch_predictor_dataset_modified.csv"
 
 if not os.path.exists(file_path):
     print(f"Error: File not found at {file_path}. Please check the file path.")
