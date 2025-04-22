@@ -1,7 +1,0 @@
-# Save model
-import joblib
-joblib.dump(model, 'branch_predictor.pkl')
-
-# Load model (Streamlit app)
-import joblib
-model = joblib.load('models/branch_predictor.pkl')
