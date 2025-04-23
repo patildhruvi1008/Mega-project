@@ -1,67 +1,156 @@
-from flask import Flask, render_template_string, request
 import os
 import pandas as pd
+import logging
+import io
+from flask import Flask, render_template, request, redirect, url_for, flash, session
 from sklearn.preprocessing import LabelEncoder
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import classification_report, accuracy_score
 from sklearn.model_selection import train_test_split
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
 app = Flask(__name__)
+app.secret_key = os.environ.get("SESSION_SECRET", "default_secret_key")
 
-# Load and preprocess the dataset
-file_path = "branch_predictor_dataset_modified.csv"
-df = pd.read_csv(file_path)
+# Sample dataset as a CSV string (since we can't use the original file path)
+SAMPLE_DATA = "branch_predictor_dataset_modified.csv"
+df = pd.read_csv(SAMPLE_DATA)
 
+# Model and label encoders
+model = None
 label_encoders = {}
-categorical_cols = ['Category', 'Branch']
-for col in categorical_cols:
-    le = LabelEncoder()
-    df[col] = le.fit_transform(df[col])
-    label_encoders[col] = le
 
-# Model Training
-def train_model(score_column):
-    X = df[['Category', score_column, '10th Marks', '12th Marks']]
-    y = df['Branch']
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = KNeighborsClassifier(n_neighbors=5)
-    model.fit(X_train, y_train)
-    return model
+def load_and_train_model():
+    global model, label_encoders
+    
+    try:
+        # Load the dataset from the CSV string
+        df = pd.read_csv(io.StringIO(SAMPLE_DATA))
+        
+        # Encode categorical variables
+        label_encoders = {}
+        categorical_cols = ['Category', 'Branch']
+        for col in categorical_cols:
+            le = LabelEncoder()
+            df[col] = le.fit_transform(df[col])
+            label_encoders[col] = le
+        
+        # Train model for both exam types
+        X = df[['Category', 'JEE Marks', 'MHT-CET Marks', '10th Marks', '12th Marks']]
+        y = df['Branch']
+        
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        model = KNeighborsClassifier(n_neighbors=5)
+        model.fit(X_train, y_train)
+        
+        logger.info("Model trained successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error training model: {str(e)}")
+        return False
 
-@app.route('/', methods=['GET', 'POST'])
-def predict_branch():
-    prediction = None
-    if request.method == 'POST':
-        exam_type = request.form['exam_type']
-        category = request.form['category']
-        score = float(request.form['score'])
-        tenth = float(request.form['tenth'])
-        twelfth = float(request.form['twelfth'])
+@app.route('/', methods=['GET'])
+def index():
+    # Get the list of available categories from the label encoder
+    if label_encoders and 'Category' in label_encoders:
+        categories = label_encoders['Category'].classes_.tolist()
+    else:
+        categories = []
+    return render_template('index.html', categories=categories)
 
-        score_column = "JEE Marks" if exam_type == "JEE" else "MHT-CET Marks"
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        # Get form data
+        exam_type = request.form.get('exam_type')
+        student_category = request.form.get('category')
+        exam_score = float(request.form.get('exam_score'))
+        tenth_marks = float(request.form.get('tenth_marks'))
+        twelfth_marks = float(request.form.get('twelfth_marks'))
+        
+        # Validate inputs
+        errors = []
+        
+        # Set max score based on exam type
         max_score = 300 if exam_type == "JEE" else 200
+        score_column = "JEE Marks" if exam_type == "JEE" else "MHT-CET Marks"
+        
+        # Check score range
+        if not (0 <= exam_score <= max_score):
+            errors.append(f"Exam score must be between 0 and {max_score}")
+        
+        # Check cutoff requirements
+        if exam_type == "MHT-CET":
+            if student_category.lower() == "general" and exam_score < 90:
+                errors.append("General category requires at least 90 marks in MHT-CET")
+            elif student_category.lower() != "general" and exam_score < 80:
+                errors.append("Reserved categories require at least 80 marks in MHT-CET")
+        elif exam_type == "JEE":
+            if student_category.lower() == "general" and exam_score < 90:
+                errors.append("General category requires at least 90 marks in JEE")
+        
+        # Check 10th and 12th marks
+        if not (0 <= tenth_marks <= 100):
+            errors.append("10th marks must be between 0 and 100")
+        if not (0 <= twelfth_marks <= 100):
+            errors.append("12th marks must be between 0 and 100")
+            
+        if errors:
+            for error in errors:
+                flash(error, 'danger')
+            return redirect(url_for('index'))
+        
+        # Encode category
+        encoded_category = label_encoders['Category'].transform([student_category])[0]
+        
+        # Create input data
+        input_data = pd.DataFrame([[encoded_category, 0, 0, tenth_marks, twelfth_marks]],
+                               columns=['Category', 'JEE Marks', 'MHT-CET Marks', '10th Marks', '12th Marks'])
+        
+        # Set the appropriate score
+        input_data[score_column] = exam_score
+        
+        # Predict
+        predicted_branch_encoded = model.predict(input_data)[0]
+        predicted_branch = label_encoders['Branch'].inverse_transform([predicted_branch_encoded])[0]
+        
+        # Store result in session
+        session['prediction_result'] = {
+            'branch': predicted_branch,
+            'category': student_category,
+            'exam_type': exam_type,
+            'exam_score': exam_score,
+            'tenth_marks': tenth_marks,
+            'twelfth_marks': twelfth_marks
+        }
+        
+        return redirect(url_for('result'))
+    
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        flash(f"An error occurred: {str(e)}", 'danger')
+        return redirect(url_for('index'))
 
-        if category not in label_encoders['Category'].classes_:
-            prediction = "❌ Invalid category!"
-        elif not (0 <= score <= max_score and 0 <= tenth <= 100 and 0 <= twelfth <= 100):
-            prediction = "❌ One or more inputs are out of valid range!"
-        elif (exam_type == "MHT-CET" and 
-              ((category.lower() == "general" and score < 90) or 
-               (category.lower() != "general" and score < 80))):
-            prediction = "❌ MHT-CET cutoff not met!"
-        elif (exam_type == "JEE" and 
-              (category.lower() == "general" and score < 90)):
-            prediction = "❌ JEE cutoff not met!"
-        else:
-            model = train_model(score_column)
-            encoded_category = label_encoders['Category'].transform([category])[0]
-            input_data = pd.DataFrame([[encoded_category, score, tenth, twelfth]], 
-                                      columns=['Category', score_column, '10th Marks', '12th Marks'])
-            predicted_branch_encoded = model.predict(input_data)[0]
-            predicted_branch = label_encoders['Branch'].inverse_transform([predicted_branch_encoded])[0]
-            prediction = predicted_branch
+@app.route('/result')
+def result():
+    # Get prediction result from session
+    prediction_result = session.get('prediction_result', None)
+    if not prediction_result:
+        flash("No prediction result found. Please submit the form first.", 'warning')
+        return redirect(url_for('index'))
+    
+    return render_template('index.html', result=prediction_result)
 
-    return render_template_string('index.html', prediction=prediction)
+# Initialize model when the app starts
+def initialize():
+    with app.app_context():
+        load_and_train_model()
+
+# Initialize model at startup
+initialize()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
